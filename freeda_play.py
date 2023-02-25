@@ -5,18 +5,7 @@ from algosdk import transaction as tx
 from pyteal import *
 from beaker import *
 
-class Freeda(Application):
-    athleteNftBalance = ReservedAccountStateValue(
-        stack_type=TealType.uint64,
-        max_keys=16,
-        descr="Athlete NFT balance",
-    )
-
-    athleteNftUrl = ApplicationStateValue(
-        stack_type=TealType.bytes,
-        descr="Base URL for Athlete NFT metadata"
-    )
-
+class FreedaPlay(Application):
     adminAccount = ApplicationStateValue(
         stack_type=TealType.bytes,
         descr="The admin account. He can configure various settings in the application."
@@ -40,12 +29,7 @@ class Freeda(Application):
             self.initialize_application_state(),
             self.adminAccount.set(Txn.sender()),
             self.isSeasonActive.set(Int(0)),
-            self.athleteNftValue.set(Int(1000000)),
-            InnerTxnBuilder.Execute({ # create the value preserving nft on creation
-                TxnField.type_enum: TxnType.AssetConfig,
-                TxnField.asset_amount: Int(1000),
-                TxnField.config_asset_name
-            }),
+            self.athleteNftValue.set(Int(1000000)), # 1 Algo
         )
 
     @opt_in
@@ -53,28 +37,92 @@ class Freeda(Application):
         return self.initialize_account_state()
 
     @external
-    def purchaseAthleteNft(self, *, output: abi.Uint64):
+    def initAthleteNft(self, *, output: abi.Uint64):
         return Seq(
+            # Create an Athlete NFT - we can use Jesus for sample data
+            InnerTxnBuilder.Execute({
+                TxnField.type_enum: TxnType.AssetConfig,
+                TxnField.config_asset_name: Bytes("Gabriel Jesus - Freeda Play"),
+                TxnField.config_asset_total: Int(1000),
+                TxnField.config_asset_decimals: Int(0),
+                TxnField.config_asset_url: Bytes("https://freeda-play-nft.glitch.me/metadata?id=1"),
+                TxnField.config_asset_default_frozen: Int(0),
+                TxnField.config_asset_reserve: Global.current_application_address(),
+                TxnField.config_asset_manager: Global.current_application_address(),
+                TxnField.config_asset_freeze: Global.current_application_address(),
+                TxnField.config_asset_clawback: Global.current_application_address(),
+            }),
+            # Output created Athlete NFT ID
+            output.set(InnerTxn.created_asset_id()),
+        )
+
+    @external
+    def purchaseAthleteNft(self, asset_id: abi.Uint64, *, output: abi.Uint64):
+        return Seq(
+            # Check that supplied ASA is an Athlete NFT
+            creatorCheck := AssetParam.creator(Txn.assets[0]),
+            Assert(creatorCheck.hasValue() == Int(1), comment="ASA supplied must exist"),
+            Assert(creatorCheck.value() == Global.current_application_address(), comment="ASA supplied must be created by Freeda Play"),
+            # Other basic checks
             Assert(self.isSeasonActive == Int(1), comment="Football season must be active (not currently active)"),
             Assert(Gtxn[0].type_enum() == TxnType.Payment, comment="First Txn in Group must be Payment"),
             Assert(Gtxn[0].receiver() == Global.current_application_address(), comment="Receiver of Payment must be application"),
             Assert(Gtxn[0].amount() >= self.athleteNftValue, comment="Must transfer at least `athleteNftValue` microAlgos to purchase NFT"),
-            self.athleteNftBalance[Bytes("Test")].set(self.athleteNftBalance[Bytes("Test")].get() + Int(1)),
-            output.set(self.athleteNftBalance[Bytes("Test")]),
+            # Send the Athlete NFT to Txn.sender()
+            InnerTxnBuilder.Execute({
+                TxnField.type_enum: TxnType.AssetTransfer,
+                TxnField.sender: Global.current_application_address(),
+                TxnField.asset_receiver: Txn.sender(),
+                TxnField.asset_amount: Int(1),
+                TxnField.xfer_asset: Txn.assets[0],
+            }),
+            # Freeze the sent asset if the season is active
+            InnerTxnBuilder.Execute({
+                TxnField.type_enum: TxnType.AssetFreeze,
+                TxnField.freeze_asset : Txn.assets[0],
+                TxnField.freeze_asset_account: Txn.sender(),
+                TxnField.freeze_asset_frozen: self.isSeasonActive.get()
+            }),
+            # Return the new Athlete NFT balance of Txn.sender()
+            balCheck := AssetHolding.balance(Txn.sender(), asset_id.get()),
+            output.set(balCheck.value())
         )
 
     @external
     def sellAthleteNft(self, *, output: abi.Uint64):
         return Seq(
             Assert(self.isSeasonActive == Int(1), comment="Football season must be active (not currently active)"),
-            Assert(self.athleteNftBalance[Bytes("Test")].get() > Int(0), comment="Must have at least 1 athelete NFT to sell"),
-            self.athleteNftBalance[Bytes("Test")].set(self.athleteNftBalance[Bytes("Test")].get() - Int(1)),
+            # Has to be a clawback txn since the asset is usually frozen
+            InnerTxnBuilder.Execute({
+                TxnField.type_enum: TxnType.AssetTransfer,
+                TxnField.asset_sender: Txn.sender(),
+                TxnField.sender: Global.current_application_address(),
+                TxnField.asset_receiver: Global.current_application_address(),
+                TxnField.asset_amount: Int(1),
+                TxnField.xfer_asset: Txn.assets[0]
+            }),
+            # Reimburse Txn.sender() with proper Algo amount
             InnerTxnBuilder.Execute({
                 TxnField.type_enum: TxnType.Payment,
                 TxnField.amount: self.athleteNftValue,
                 TxnField.receiver: Txn.sender()
             }),
-            output.set(self.athleteNftBalance[Bytes("Test")]),
+            # Return the new Athlete NFT balance of Txn.sender()
+            balCheck := AssetHolding.balance(Txn.sender(), Txn.assets[0]),
+            output.set(balCheck.value())
+        )
+
+    # When the seasons ends, users may want to unfreeze their assets
+    @external
+    def unlockAssets(self):
+        return Seq(
+            Assert(self.isSeasonActive == Int(0), comment="Season must not be active"),
+            InnerTxnBuilder.Execute({
+                TxnField.type_enum: TxnType.AssetFreeze,
+                TxnField.freeze_asset : Txn.assets[0],
+                TxnField.freeze_asset_account: Txn.sender(),
+                TxnField.freeze_asset_frozen: Int(0)
+            })
         )
 
     @external
@@ -87,21 +135,9 @@ class Freeda(Application):
             output.set(self.isSeasonActive)
         )
 
-    @external
-    def setAthleteNftUrl(self, newUrl: abi.String, *, output: abi.String):
-        return Seq(
-            Assert(Txn.sender() == self.adminAccount, comment="Sender must be admin"),
-            self.athleteNftUrl.set(newUrl.get()),
-            Approve()
-        )
-
     @external(read_only = True)
     def getAthleteNftValue(self, *, output: abi.Uint64):
         return output.set(self.athleteNftValue)
-
-    @external(read_only = True)
-    def getAthleteNftUrl(self, *, output: abi.Uint64):
-        return output.set(self.athleteNftUrl)
 
 
 def demo():
@@ -109,7 +145,7 @@ def demo():
     algod_client = sandbox.get_algod_client()
     app_client = client.ApplicationClient(
         client = algod_client,
-        app = Freeda(version=8),
+        app = FreedaPlay(version=8),
         signer = first_acc.signer,
     )
     print("Deploying app...")
@@ -120,38 +156,54 @@ def demo():
         Address: {app_addr}\n"""
     )
 
-    # creating payment tx to buy athlete nft
+    # Get suggested params before testing
     s_params = algod_client.suggested_params()
-    pay_tx = tx.PaymentTxn(sender=first_acc.address, sp=s_params, receiver=app_addr, amt=1000000 + 2000) # add 2000 for fees
-    pay_tx_signer = a_t_c.TransactionWithSigner(txn=pay_tx, signer=first_acc.signer)
 
-    # atc
-    fundAndCall = a_t_c.AtomicTransactionComposer()
-    fundAndCall.add_transaction(pay_tx_signer)
-
-    # begin appl
+    # Begin testing
     print("Funding contract...\n")
-    app_client.fund(100000 + 1) # fund with minimum balance
+    app_client.fund(1000000)
+
     print("Opting in to the contract...\n")
     app_client.opt_in()
+
+    print("Creating athlete nft...")
+    callb = app_client.call(method=FreedaPlay.initAthleteNft)
+    asa_id = callb.return_value
+
+    print("The created ASA ID is " + str(asa_id) + "\n")
+
+    print("Opting into created ASA...\n")
+    optin_tx = tx.AssetOptInTxn(sender=first_acc.address, sp=s_params, index=asa_id)
+    algod_client.send_transaction(optin_tx.sign(first_acc.private_key))
+
     print("Activating season...")
-    calla = app_client.call(method=Freeda.toggleSeason)
+    calla = app_client.call(method=FreedaPlay.toggleSeason, foreign_assets=[asa_id])
     print("Season status after 1st toggle: " + str(calla.return_value) + "\n")
+
     print("Checking athlete nft value...")
-    call0 = app_client.call(method=Freeda.getAthleteNftValue)
+    call0 = app_client.call(method=FreedaPlay.getAthleteNftValue)
     print("The value of an athlete nft is " + str(call0.return_value / 1000000) + " Algo(s)\n")
+
     print("Buying athlete nft...")
-    call = app_client.call(atc=fundAndCall, method=Freeda.purchaseAthleteNft)
-    print("Test NFT balance after buy: " + str(call.return_value) + "\n")
-    # exec = fundAndCall.execute(client=sandbox.get_algod_client(), wait_rounds=100)
-    # print(exec.tx_ids)
-    input("press enter to continue (up next: sell athlete nft)") # so we can check if funds were actuall transfered
-    print("\nSelling athlete nft...")
-    call2 = app_client.call(method=Freeda.sellAthleteNft)
-    print("Test nft balance after sell: " + str(call2.return_value) + "\n")
+    pay_tx = tx.PaymentTxn(sender=first_acc.address, sp=s_params, receiver=app_addr, amt=1000000 + 2000) # add 2000 for fees
+    pay_tx_signer = a_t_c.TransactionWithSigner(txn=pay_tx, signer=first_acc.signer)
+    fundAndCall = a_t_c.AtomicTransactionComposer()
+    fundAndCall.add_transaction(pay_tx_signer)
+    call = app_client.call(atc=fundAndCall, method=FreedaPlay.purchaseAthleteNft, asset_id=asa_id, foreign_assets=[asa_id])
+    print("Athlete NFT balance after buy: " + str(call.return_value) + "\n")
+
+    print("Selling athlete nft...")
+    call2 = app_client.call(method=FreedaPlay.sellAthleteNft, foreign_assets=[asa_id])
+    print("Athlete NFT balance after sell: " + str(call2.return_value) + "\n")
+
     print("Deactivating season...")
-    call3 = app_client.call(method=Freeda.toggleSeason)
-    print("Season status after 2nd toggle: " + str(call3.return_value))
+    call3 = app_client.call(method=FreedaPlay.toggleSeason, foreign_assets=[asa_id])
+    print("Season status after 2nd toggle: " + str(call3.return_value) + "\n")
+
+    print("Unfreezing account when season is inactive...\n")
+    app_client.call(method=FreedaPlay.unlockAssets, foreign_assets=[asa_id])
+
+    print("Routine finished!")
 
 
 if __name__ == "__main__":
