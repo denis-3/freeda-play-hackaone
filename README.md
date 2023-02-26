@@ -14,3 +14,8 @@ Make sure to install [sandbox](https://github.com/algorand/sandbox), along with 
  - `algosdk`: `pip3 install algosdk`
 
 Start sandbox (`./sandbox up`) and then `freeda_play.py` (`python3 freeda_play.py`). It will then run a demonstration of the features of the smart contract.
+
+## Live Instances
+The smart contract is currently deployed to:
+ - Algorand Mainnet: [https://algoexplorer.io/application/1047589638](https://algoexplorer.io/application/1047589638)
+ - Algorand Testnet: [https://testnet.algoexplorer.io/application/160833764](https://testnet.algoexplorer.io/application/160833764)
