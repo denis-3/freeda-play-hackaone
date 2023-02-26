@@ -1,5 +1,5 @@
 from algosdk import atomic_transaction_composer as a_t_c
-from algosdk import v2client
+from algosdk import v2client, account
 from algosdk import transaction as tx
 
 from pyteal import *
@@ -14,13 +14,13 @@ class FreedaPlay(Application):
     athleteNftValue = ApplicationStateValue(
         stack_type=TealType.uint64,
         static=True,
-        descr="Value of Athlete NFT.",
+        descr="Value of an Athlete NFT in microAlgos",
     )
 
     isSeasonActive = ApplicationStateValue(
         stack_type=TealType.uint64,
         default=Int(0),
-        descr="If the football season currently active"
+        descr="If the football season currently active (0 = inactive, 1 = active)"
     )
 
     @create
@@ -39,7 +39,7 @@ class FreedaPlay(Application):
     @external
     def initAthleteNft(self, *, output: abi.Uint64):
         return Seq(
-            # Create an Athlete NFT - we can use Jesus for sample data
+            # Create an Athlete NFT - we can use Jesus as an example
             InnerTxnBuilder.Execute({
                 TxnField.type_enum: TxnType.AssetConfig,
                 TxnField.config_asset_name: Bytes("Gabriel Jesus - Freeda Play"),
@@ -62,11 +62,11 @@ class FreedaPlay(Application):
             # Check that supplied ASA is an Athlete NFT
             creatorCheck := AssetParam.creator(Txn.assets[0]),
             Assert(creatorCheck.hasValue() == Int(1), comment="ASA supplied must exist"),
-            Assert(creatorCheck.value() == Global.current_application_address(), comment="ASA supplied must be created by Freeda Play"),
+            Assert(creatorCheck.value() == Global.current_application_address(), comment="ASA supplied must be created by Freeda Play app"),
             # Other basic checks
             Assert(self.isSeasonActive == Int(1), comment="Football season must be active (not currently active)"),
             Assert(Gtxn[0].type_enum() == TxnType.Payment, comment="First Txn in Group must be Payment"),
-            Assert(Gtxn[0].receiver() == Global.current_application_address(), comment="Receiver of Payment must be application"),
+            Assert(Gtxn[0].receiver() == Global.current_application_address(), comment="Receiver of Payment must be Application"),
             Assert(Gtxn[0].amount() >= self.athleteNftValue, comment="Must transfer at least `athleteNftValue` microAlgos to purchase NFT"),
             # Send the Athlete NFT to Txn.sender()
             InnerTxnBuilder.Execute({
@@ -114,7 +114,7 @@ class FreedaPlay(Application):
 
     # When the seasons ends, users may want to unfreeze their assets
     @external
-    def unlockAssets(self):
+    def unlockAsset(self):
         return Seq(
             Assert(self.isSeasonActive == Int(0), comment="Season must not be active"),
             InnerTxnBuilder.Execute({
@@ -140,21 +140,33 @@ class FreedaPlay(Application):
         return output.set(self.athleteNftValue)
 
 
-def demo():
-    first_acc = sandbox.get_accounts()[0]
-    algod_client = sandbox.get_algod_client()
+def demo(deployedOnPublicNet=False,
+        acc_addr=None,
+        acc_privkey=None,
+        acc_signer=None,
+        algod_client=None,
+        app_client=None,
+        app_addr=None):
+    # Setup - if `deployedOnPublicNet` is True, then all other params must be supplied
+    acc_addr = sandbox.get_accounts()[0].address if not deployedOnPublicNet else acc_addr
+    acc_privkey = sandbox.get_accounts()[0].private_key if not deployedOnPublicNet else acc_privkey
+    acc_signer = sandbox.get_accounts()[0].signer if not deployedOnPublicNet else acc_signer
+    algod_client = sandbox.get_algod_client() if not deployedOnPublicNet else algod_client
+
     app_client = client.ApplicationClient(
         client = algod_client,
         app = FreedaPlay(version=8),
-        signer = first_acc.signer,
-    )
-    print("Deploying app...")
-    app_id, app_addr, txid = app_client.create()
-    print(
-        f"""Deployed app in txid {txid}
-        App ID: {app_id}
-        Address: {app_addr}\n"""
-    )
+        signer = acc_signer,
+    ) if not deployedOnPublicNet else app_client
+
+    if not deployedOnPublicNet:
+        print("Deploying app...")
+        app_id, app_addr, txid = app_client.create()
+        print(
+            f"""Deployed app in txid {txid}
+            App ID: {app_id}
+            Address: {app_addr}\n"""
+        )
 
     # Get suggested params before testing
     s_params = algod_client.suggested_params()
@@ -173,8 +185,8 @@ def demo():
     print("The created ASA ID is " + str(asa_id) + "\n")
 
     print("Opting into created ASA...\n")
-    optin_tx = tx.AssetOptInTxn(sender=first_acc.address, sp=s_params, index=asa_id)
-    algod_client.send_transaction(optin_tx.sign(first_acc.private_key))
+    optin_tx = tx.AssetOptInTxn(sender=acc_addr, sp=s_params, index=asa_id)
+    algod_client.send_transaction(optin_tx.sign(acc_privkey))
 
     print("Activating season...")
     calla = app_client.call(method=FreedaPlay.toggleSeason, foreign_assets=[asa_id])
@@ -185,8 +197,8 @@ def demo():
     print("The value of an athlete nft is " + str(call0.return_value / 1000000) + " Algo(s)\n")
 
     print("Buying athlete nft...")
-    pay_tx = tx.PaymentTxn(sender=first_acc.address, sp=s_params, receiver=app_addr, amt=1000000 + 2000) # add 2000 for fees
-    pay_tx_signer = a_t_c.TransactionWithSigner(txn=pay_tx, signer=first_acc.signer)
+    pay_tx = tx.PaymentTxn(sender=acc_addr, sp=s_params, receiver=app_addr, amt=1000000 + 2000) # add 2000 for fees
+    pay_tx_signer = a_t_c.TransactionWithSigner(txn=pay_tx, signer=acc_signer)
     fundAndCall = a_t_c.AtomicTransactionComposer()
     fundAndCall.add_transaction(pay_tx_signer)
     call = app_client.call(atc=fundAndCall, method=FreedaPlay.purchaseAthleteNft, asset_id=asa_id, foreign_assets=[asa_id])
@@ -200,11 +212,49 @@ def demo():
     call3 = app_client.call(method=FreedaPlay.toggleSeason, foreign_assets=[asa_id])
     print("Season status after 2nd toggle: " + str(call3.return_value) + "\n")
 
-    print("Unfreezing account when season is inactive...\n")
-    app_client.call(method=FreedaPlay.unlockAssets, foreign_assets=[asa_id])
+    print("Unlocking asset when season is inactive...\n")
+    app_client.call(method=FreedaPlay.unlockAsset, foreign_assets=[asa_id])
 
-    print("Routine finished!")
+    print("Demo finished!")
+
+
+
+def deploy(deployOnTestnet, run_demo):
+    # Initialize client
+    algod_token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    algod_address = 'https://node.testnet.algoexplorerapi.io'
+    if not deployOnTestnet:
+        input("\nAre you sure you want to deploy Freeda Play application to Algorand mainnet?\nPress ENTER to deploy and control + C to cancel. ")
+        algod_address = "https://node.algoexplorerapi.io"
+
+    algod_client = v2client.algod.AlgodClient(algod_token, algod_address)
+
+    acc_privkey = "+rQo90lKxsmal4s3/q1c8HEGR1bwEEkFT8NVJ0toJB3xTqM3C7COETy8D/44+5sQ9IhW2zNnGcauTND2/9P1Eg=="
+    acc_addr = account.address_from_private_key(acc_privkey)
+    signer = a_t_c.AccountTransactionSigner(acc_privkey)
+
+    app_client = client.ApplicationClient(
+        client = algod_client,
+        app = FreedaPlay(version=8),
+        signer = signer,
+    )
+
+    print("Deploying app...")
+    app_id, app_addr, txid = app_client.create()
+    print(
+        f"""Deployed app in txid {txid}
+        App ID: {app_id}
+        Address: {app_addr}\n"""
+    )
+
+    if run_demo:
+        demo(True, acc_addr, acc_privkey, signer, algod_client, app_client, app_addr)
+
 
 
 if __name__ == "__main__":
+    # Uncomment the following line to deploy app on Algorand Testnet and run demo()
+    # deploy(True, True)
+
+    # demo() will deploy the app to the sandbox environment by default
     demo()
