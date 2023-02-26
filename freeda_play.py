@@ -220,18 +220,19 @@ def demo(deployedOnPublicNet=False,
 
 
 def deploy(deployOnTestnet, run_demo):
+    # Initialize account
+    acc_privkey = "your private key here"
+    acc_addr = account.address_from_private_key(acc_privkey)
+    signer = a_t_c.AccountTransactionSigner(acc_privkey)
+
     # Initialize client
     algod_token = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    algod_address = 'https://node.testnet.algoexplorerapi.io'
+    algod_address = 'https://node.testnet.algoexplorerapi.io' # Node URLs provided as sample; any valid node URLs will work
     if not deployOnTestnet:
-        input("\nAre you sure you want to deploy Freeda Play application to Algorand mainnet?\nPress ENTER to deploy and control + C to cancel. ")
+        input("\nAre you sure you want to deploy Freeda Play application to Algorand MAINNET using account " + acc_addr + "?\nPress ENTER to deploy and control + C to cancel. ")
         algod_address = "https://node.algoexplorerapi.io"
 
     algod_client = v2client.algod.AlgodClient(algod_token, algod_address)
-
-    acc_privkey = "+rQo90lKxsmal4s3/q1c8HEGR1bwEEkFT8NVJ0toJB3xTqM3C7COETy8D/44+5sQ9IhW2zNnGcauTND2/9P1Eg=="
-    acc_addr = account.address_from_private_key(acc_privkey)
-    signer = a_t_c.AccountTransactionSigner(acc_privkey)
 
     app_client = client.ApplicationClient(
         client = algod_client,
@@ -239,7 +240,7 @@ def deploy(deployOnTestnet, run_demo):
         signer = signer,
     )
 
-    print("Deploying app...")
+    print("\nDeploying app with account " + acc_addr + "...")
     app_id, app_addr, txid = app_client.create()
     print(
         f"""Deployed app in txid {txid}
